@@ -2,7 +2,7 @@
 
 A [pi](https://github.com/badlogic/pi-mono) extension that shows your ChatGPT Codex subscription usage inline in the footer.
 
-It displays the weekly ChatGPT Pro/Codex usage percentage next to the active Codex model, and provides a command for detailed 5-hour and weekly usage windows.
+It displays configurable ChatGPT Pro/Codex usage next to the active Codex model, and provides a command for detailed 5-hour and weekly usage windows.
 
 ## Preview
 
@@ -51,6 +51,24 @@ This shows:
 - 5-hour usage window
 - weekly usage window
 - reset times
+
+### Footer configuration
+
+The `/chatgpt-limit` menu also configures the footer display:
+
+- show weekly usage (default), 5-hour usage, both, or hide usage
+- show used percent, used percent with reset, remaining percent, or remaining percent with reset
+- reset footer settings to defaults
+
+Examples:
+
+- `W 42%`
+- `W 42% · ~2d`
+- `W 58% left`
+- `W 58% left · ~2d`
+- `5h 25% / W 42%`
+
+Settings persist globally in `~/.pi/agent/chatgpt-limit.json`, so the same footer preference applies across pi sessions.
 
 ## Notes
 
