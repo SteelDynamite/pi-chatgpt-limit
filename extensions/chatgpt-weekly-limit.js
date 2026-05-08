@@ -301,12 +301,6 @@ function installFooter(pi, ctx) {
 
 /** @param {import('@mariozechner/pi-coding-agent').ExtensionContext} ctx */
 async function updateUsage(ctx) {
-  if (process.env.PI_OFFLINE === "1") {
-    usageSnapshot = undefined
-    requestRender()
-    return undefined
-  }
-
   const model = ctx.model
   if (!isOpenAICodexProvider(model?.provider)) {
     usageSnapshot = undefined
