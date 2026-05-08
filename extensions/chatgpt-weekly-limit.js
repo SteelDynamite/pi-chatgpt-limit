@@ -248,6 +248,12 @@ function installFooter(pi, ctx) {
 
 /** @param {import('@mariozechner/pi-coding-agent').ExtensionContext} ctx */
 async function updateUsage(ctx) {
+  if (process.env.PI_OFFLINE === "1") {
+    usageSnapshot = undefined;
+    requestRender();
+    return undefined;
+  }
+
   const model = ctx.model;
   if (!isOpenAICodexProvider(model?.provider)) {
     usageSnapshot = undefined;
@@ -314,13 +320,17 @@ export default function (pi) {
     return inFlight;
   }
 
-  pi.on("session_start", async (_event, ctx) => {
+  function queueUpdateInBackground(ctx) {
+    void queueUpdate(ctx).catch(() => undefined);
+  }
+
+  pi.on("session_start", (_event, ctx) => {
     installFooter(pi, ctx);
-    await queueUpdate(ctx);
+    queueUpdateInBackground(ctx);
   });
 
-  pi.on("model_select", async (_event, ctx) => queueUpdate(ctx));
-  pi.on("agent_end", async (_event, ctx) => queueUpdate(ctx));
+  pi.on("model_select", (_event, ctx) => queueUpdateInBackground(ctx));
+  pi.on("agent_end", (_event, ctx) => queueUpdateInBackground(ctx));
 
   pi.on("session_shutdown", async () => {
     if (refreshTimer) clearInterval(refreshTimer);
