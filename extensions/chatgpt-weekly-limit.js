@@ -14,8 +14,28 @@ const OPENAI_AUTH_CLAIM = "https://api.openai.com/auth"
 const OPENAI_PROFILE_CLAIM = "https://api.openai.com/profile"
 const FIVE_HOUR_SECONDS = 5 * 60 * 60
 const WEEK_SECONDS = 7 * 24 * 60 * 60
+const CONFIG_ENTRY_TYPE = "chatgpt-limit-config"
+
+const DEFAULT_FOOTER_CONFIG = {
+  quotaWindow: "weekly",
+  displayMode: "used",
+}
+
+const QUOTA_WINDOW_OPTIONS = [
+  { label: "Weekly usage (default)", value: "weekly" },
+  { label: "5-hour usage", value: "fiveHour" },
+  { label: "Both 5-hour and weekly", value: "both" },
+  { label: "Hide usage from footer", value: "hidden" },
+]
+
+const DISPLAY_MODE_OPTIONS = [
+  { label: "Used percent, e.g. W 42%", value: "used" },
+  { label: "Remaining percent, e.g. W 58% left", value: "remaining" },
+  { label: "Compact with reset, e.g. W 42% · ~2d", value: "compact" },
+]
 
 let usageSnapshot
+let footerConfig = { ...DEFAULT_FOOTER_CONFIG }
 let refreshTimer
 let requestRender = () => {}
 
@@ -159,6 +179,47 @@ function formatResetLong(resetAt) {
   return `in ${mins}m`
 }
 
+function normalizeFooterConfig(value) {
+  const record = asRecord(value)
+  const quotaWindow = QUOTA_WINDOW_OPTIONS.some(
+    (option) => option.value === record?.quotaWindow,
+  )
+    ? record.quotaWindow
+    : DEFAULT_FOOTER_CONFIG.quotaWindow
+  const displayMode = DISPLAY_MODE_OPTIONS.some(
+    (option) => option.value === record?.displayMode,
+  )
+    ? record.displayMode
+    : DEFAULT_FOOTER_CONFIG.displayMode
+
+  return { quotaWindow, displayMode }
+}
+
+function restoreFooterConfig(ctx) {
+  footerConfig = { ...DEFAULT_FOOTER_CONFIG }
+  for (const entry of ctx.sessionManager.getBranch()) {
+    if (entry.type === "custom" && entry.customType === CONFIG_ENTRY_TYPE) {
+      footerConfig = normalizeFooterConfig(entry.data)
+    }
+  }
+}
+
+function describeFooterConfig() {
+  const quotaWindow = QUOTA_WINDOW_OPTIONS.find(
+    (option) => option.value === footerConfig.quotaWindow,
+  )
+  const displayMode = DISPLAY_MODE_OPTIONS.find(
+    (option) => option.value === footerConfig.displayMode,
+  )
+  return `${quotaWindow?.label || "Weekly usage"}; ${displayMode?.label || "Used percent"}`
+}
+
+function saveFooterConfig(pi, nextConfig) {
+  footerConfig = normalizeFooterConfig(nextConfig)
+  pi.appendEntry(CONFIG_ENTRY_TYPE, footerConfig)
+  requestRender()
+}
+
 /** @param {import('@mariozechner/pi-ai').AssistantMessage['usage']} usage */
 function addUsage(total, usage) {
   total.input += usage?.input ?? 0
@@ -166,6 +227,66 @@ function addUsage(total, usage) {
   total.cacheRead += usage?.cacheRead ?? 0
   total.cacheWrite += usage?.cacheWrite ?? 0
   total.cost += usage?.cost?.total ?? 0
+}
+
+function formatFooterUsagePart(label, window) {
+  if (!window) return undefined
+
+  if (footerConfig.displayMode === "remaining") {
+    return `${label} ${formatRemainingPercent(window)} left`
+  }
+
+  const used = formatUsedPercent(window)
+  if (footerConfig.displayMode === "compact") {
+    return `${label} ${used} · ${formatResetShort(window.resetAt)}`
+  }
+
+  return `${label} ${used}`
+}
+
+function formatFooterUsage() {
+  if (footerConfig.quotaWindow === "hidden") return undefined
+
+  const parts = []
+  if (
+    footerConfig.quotaWindow === "fiveHour" ||
+    footerConfig.quotaWindow === "both"
+  ) {
+    const part = formatFooterUsagePart("5h", usageSnapshot?.fiveHour)
+    if (part) parts.push(part)
+  }
+  if (
+    footerConfig.quotaWindow === "weekly" ||
+    footerConfig.quotaWindow === "both"
+  ) {
+    const part = formatFooterUsagePart("W", usageSnapshot?.weekly)
+    if (part) parts.push(part)
+  }
+
+  return parts.length > 0 ? parts.join(" / ") : undefined
+}
+
+function getHighestDisplayedUsagePercent() {
+  const values = []
+  if (
+    footerConfig.quotaWindow === "fiveHour" ||
+    footerConfig.quotaWindow === "both"
+  ) {
+    values.push(usageSnapshot?.fiveHour?.usedPercent)
+  }
+  if (
+    footerConfig.quotaWindow === "weekly" ||
+    footerConfig.quotaWindow === "both"
+  ) {
+    values.push(usageSnapshot?.weekly?.usedPercent)
+  }
+
+  return Math.max(
+    0,
+    ...values
+      .filter((value) => typeof value === "number")
+      .map((value) => Math.max(0, Math.min(100, value))),
+  )
 }
 
 function renderFooter(pi, ctx, footerData, theme, width) {
@@ -237,10 +358,13 @@ function renderFooter(pi, ctx, footerData, theme, width) {
         : `${modelName} • ${thinkingLevel}`
   }
 
-  if (isOpenAICodexProvider(model?.provider) && usageSnapshot?.weekly) {
-    const used = Math.max(0, Math.min(100, usageSnapshot.weekly.usedPercent))
-    const color = used >= 90 ? "error" : used >= 70 ? "muted" : "dim"
-    rightSideWithoutProvider += ` • ${theme.fg(color, `${Math.round(used)}%`)}`
+  if (isOpenAICodexProvider(model?.provider)) {
+    const footerUsage = formatFooterUsage()
+    if (footerUsage) {
+      const used = getHighestDisplayedUsagePercent()
+      const color = used >= 90 ? "error" : used >= 70 ? "muted" : "dim"
+      rightSideWithoutProvider += ` • ${theme.fg(color, footerUsage)}`
+    }
   }
 
   let rightSide = rightSideWithoutProvider
@@ -363,8 +487,47 @@ function buildUsageDetails(snapshot, provider) {
   )
   if (snapshot?.fetchedAt)
     lines.push(`fetched: ${new Date(snapshot.fetchedAt).toLocaleString()}`)
+  lines.push(`footer: ${describeFooterConfig()}`)
   lines.push(`endpoint: ${CHATGPT_BASE_URL}/wham/usage`)
   return lines
+}
+
+async function configureQuotaWindow(pi, ctx) {
+  const labels = QUOTA_WINDOW_OPTIONS.map((option) =>
+    option.value === footerConfig.quotaWindow
+      ? `✓ ${option.label}`
+      : option.label,
+  )
+  const choice = await ctx.ui.select(
+    "Display which ChatGPT limit in footer?",
+    labels,
+  )
+  const selected = QUOTA_WINDOW_OPTIONS.find((option) =>
+    choice?.endsWith(option.label),
+  )
+  if (!selected) return
+
+  saveFooterConfig(pi, { ...footerConfig, quotaWindow: selected.value })
+  ctx.ui.notify(`ChatGPT footer display: ${selected.label}`, "info")
+}
+
+async function configureDisplayMode(pi, ctx) {
+  const labels = DISPLAY_MODE_OPTIONS.map((option) =>
+    option.value === footerConfig.displayMode
+      ? `✓ ${option.label}`
+      : option.label,
+  )
+  const choice = await ctx.ui.select(
+    "How should the footer value be shown?",
+    labels,
+  )
+  const selected = DISPLAY_MODE_OPTIONS.find((option) =>
+    choice?.endsWith(option.label),
+  )
+  if (!selected) return
+
+  saveFooterConfig(pi, { ...footerConfig, displayMode: selected.value })
+  ctx.ui.notify(`ChatGPT footer mode: ${selected.label}`, "info")
 }
 
 export default function (pi) {
@@ -380,6 +543,7 @@ export default function (pi) {
   }
 
   pi.on("session_start", (_event, ctx) => {
+    restoreFooterConfig(ctx)
     installFooter(pi, ctx)
     queueUpdateInBackground(ctx)
   })
@@ -396,6 +560,24 @@ export default function (pi) {
   pi.registerCommand("chatgpt-limit", {
     description: "Show ChatGPT Codex 5-hour and weekly usage limits",
     handler: async (_args, ctx) => {
+      const action = await ctx.ui.select("ChatGPT Codex usage limits", [
+        "Show current usage details",
+        `Configure footer limit (${describeFooterConfig()})`,
+        "Configure footer display mode",
+      ])
+
+      if (action === "Configure footer display mode") {
+        await configureDisplayMode(pi, ctx)
+        return
+      }
+
+      if (action?.startsWith("Configure footer limit")) {
+        await configureQuotaWindow(pi, ctx)
+        return
+      }
+
+      if (!action) return
+
       if (!isOpenAICodexProvider(ctx.model?.provider)) {
         ctx.ui.notify(
           "ChatGPT limits are only available for openai-codex models.",
