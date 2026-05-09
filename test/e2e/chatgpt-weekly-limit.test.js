@@ -549,12 +549,15 @@ test("real pi TUI still fetches usage when PI_OFFLINE is set", async () => {
       baseUrl: server.baseUrl,
       apiKey: token,
       extraEnv: { PI_OFFLINE: "1" },
+      waitFor: () => server.requests.length > 0,
+      settleMs: 1000,
     })
 
     assert.ok(
       server.requests.length > 0,
       `expected usage fetch even when PI_OFFLINE=1; output was:\n${output}`,
     )
+    assert.match(output, /42%/)
   } finally {
     await server.close()
   }
