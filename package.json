@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "test": "node --test test/e2e/*.test.js",
+    "typecheck": "tsc --noEmit",
     "format": "prettier --write .",
     "format:check": "prettier --check ."
   },
@@ -29,7 +30,9 @@
     "LICENSE"
   ],
   "devDependencies": {
-    "prettier": "^3.8.3"
+    "@types/node": "^24.12.3",
+    "prettier": "^3.8.3",
+    "typescript": "^6.0.3"
   },
   "pi": {
     "extensions": [

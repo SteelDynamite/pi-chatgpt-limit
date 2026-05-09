@@ -107,11 +107,16 @@ function getTokenMetadata(token) {
   }
 }
 
-/** @param {unknown} value */
+/**
+ * @param {unknown} value
+ * @returns {Record<string, unknown> | undefined}
+ */
 function asRecord(value) {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? value
-    : undefined
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined
+  }
+
+  return Object.fromEntries(Object.entries(value))
 }
 
 /** @param {unknown} value */
@@ -195,16 +200,19 @@ function formatResetLong(resetAt) {
 
 function normalizeFooterConfig(value) {
   const record = asRecord(value)
-  const quotaWindow = QUOTA_WINDOW_OPTIONS.some(
-    (option) => option.value === record?.quotaWindow,
-  )
-    ? record.quotaWindow
-    : DEFAULT_FOOTER_CONFIG.quotaWindow
-  const displayMode = DISPLAY_MODE_OPTIONS.some(
-    (option) => option.value === record?.displayMode,
-  )
-    ? record.displayMode
-    : DEFAULT_FOOTER_CONFIG.displayMode
+  const rawQuotaWindow = record?.quotaWindow
+  const quotaWindow =
+    typeof rawQuotaWindow === "string" &&
+    QUOTA_WINDOW_OPTIONS.some((option) => option.value === rawQuotaWindow)
+      ? rawQuotaWindow
+      : DEFAULT_FOOTER_CONFIG.quotaWindow
+
+  const rawDisplayMode = record?.displayMode
+  const displayMode =
+    typeof rawDisplayMode === "string" &&
+    DISPLAY_MODE_OPTIONS.some((option) => option.value === rawDisplayMode)
+      ? rawDisplayMode
+      : DEFAULT_FOOTER_CONFIG.displayMode
 
   return { quotaWindow, displayMode }
 }
@@ -653,6 +661,7 @@ async function resetFooterConfig(ctx) {
 }
 
 export default function (pi) {
+  /** @type {Promise<unknown>} */
   let inFlight = Promise.resolve()
 
   function queueUpdate(ctx) {
