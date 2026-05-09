@@ -273,26 +273,33 @@ function addUsage(total, usage) {
   total.cost += usage?.cost?.total ?? 0
 }
 
-function formatFooterUsagePart(label, window) {
-  if (!window) return undefined
-
-  if (footerConfig.displayMode === "remaining") {
-    return `${label} ${formatRemainingPercent(window)} left`
-  }
-
-  if (footerConfig.displayMode === "remainingCompact") {
-    return `${label} ${formatRemainingPercent(window)} left · ${formatResetShort(window.resetAt)}`
-  }
-
-  const used = formatUsedPercent(window)
-  if (footerConfig.displayMode === "compact") {
-    return `${label} ${used} · ${formatResetShort(window.resetAt)}`
-  }
-
-  return `${label} ${used}`
+function getUsageColor(window) {
+  const used = Math.max(0, Math.min(100, window?.usedPercent ?? 0))
+  if (used >= 90) return "error"
+  if (used >= 80) return "warning"
+  return "dim"
 }
 
-function formatFooterUsage() {
+function formatFooterUsagePart(label, window, theme) {
+  if (!window) return undefined
+
+  let text
+  if (footerConfig.displayMode === "remaining") {
+    text = `${label} ${formatRemainingPercent(window)} left`
+  } else if (footerConfig.displayMode === "remainingCompact") {
+    text = `${label} ${formatRemainingPercent(window)} left · ${formatResetShort(window.resetAt)}`
+  } else {
+    const used = formatUsedPercent(window)
+    text =
+      footerConfig.displayMode === "compact"
+        ? `${label} ${used} · ${formatResetShort(window.resetAt)}`
+        : `${label} ${used}`
+  }
+
+  return theme.fg(getUsageColor(window), text)
+}
+
+function formatFooterUsage(theme) {
   if (footerConfig.quotaWindow === "hidden") return undefined
 
   const parts = []
@@ -300,41 +307,18 @@ function formatFooterUsage() {
     footerConfig.quotaWindow === "fiveHour" ||
     footerConfig.quotaWindow === "both"
   ) {
-    const part = formatFooterUsagePart("5h", usageSnapshot?.fiveHour)
+    const part = formatFooterUsagePart("5h", usageSnapshot?.fiveHour, theme)
     if (part) parts.push(part)
   }
   if (
     footerConfig.quotaWindow === "weekly" ||
     footerConfig.quotaWindow === "both"
   ) {
-    const part = formatFooterUsagePart("W", usageSnapshot?.weekly)
+    const part = formatFooterUsagePart("W", usageSnapshot?.weekly, theme)
     if (part) parts.push(part)
   }
 
-  return parts.length > 0 ? parts.join(" / ") : undefined
-}
-
-function getHighestDisplayedUsagePercent() {
-  const values = []
-  if (
-    footerConfig.quotaWindow === "fiveHour" ||
-    footerConfig.quotaWindow === "both"
-  ) {
-    values.push(usageSnapshot?.fiveHour?.usedPercent)
-  }
-  if (
-    footerConfig.quotaWindow === "weekly" ||
-    footerConfig.quotaWindow === "both"
-  ) {
-    values.push(usageSnapshot?.weekly?.usedPercent)
-  }
-
-  return Math.max(
-    0,
-    ...values
-      .filter((value) => typeof value === "number")
-      .map((value) => Math.max(0, Math.min(100, value))),
-  )
+  return parts.length > 0 ? parts.join(theme.fg("dim", " / ")) : undefined
 }
 
 function renderFooter(pi, ctx, footerData, theme, width) {
@@ -407,11 +391,9 @@ function renderFooter(pi, ctx, footerData, theme, width) {
   }
 
   if (isOpenAICodexProvider(model?.provider)) {
-    const footerUsage = formatFooterUsage()
+    const footerUsage = formatFooterUsage(theme)
     if (footerUsage) {
-      const used = getHighestDisplayedUsagePercent()
-      const color = used >= 90 ? "error" : used >= 70 ? "muted" : "dim"
-      rightSideWithoutProvider += ` • ${theme.fg(color, footerUsage)}`
+      rightSideWithoutProvider += ` • ${footerUsage}`
     }
   }
 
