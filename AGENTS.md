@@ -7,6 +7,7 @@
 ## Commands
 
 - Test: `npm test`
+- Type check: `npm run typecheck`
 - Format: `npm run format`
 - Format check: `npm run format:check`
 
@@ -14,6 +15,8 @@
 
 - Package entry is declared in `package.json` under `pi.extensions`.
 - Published npm package should include only `extensions`, `README.md`, and `LICENSE` via `package.json#files`.
+- CI runs on pushes to `main` and pull requests via `.github/workflows/ci.yml`.
+- CI verifies formatting, JS type checking, e2e tests, and `npm pack --dry-run`.
 - GitHub release publishing triggers `.github/workflows/publish.yml`, which runs `npm publish --access public --provenance`.
 - After creating a release, verify:
   1. GitHub Actions publish workflow succeeded.
