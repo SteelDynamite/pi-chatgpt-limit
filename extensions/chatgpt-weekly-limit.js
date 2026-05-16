@@ -43,7 +43,10 @@ const DISPLAY_MODE_OPTIONS = [
   { label: "Used percent with reset, e.g. W 42% · ~2d", value: "compact" },
   { label: "Pace percent with state, e.g. WP 13% (reserve)", value: "pace" },
   { label: "Pace percent, e.g. WP -13%", value: "paceCompact" },
-  { label: "Pace percent with reset, e.g. WP -13% · ~2d", value: "paceResetCompact" },
+  {
+    label: "Pace percent with reset, e.g. WP -13% · ~2d",
+    value: "paceResetCompact",
+  },
   { label: "Remaining percent, e.g. W 58% left", value: "remaining" },
   {
     label: "Remaining percent with reset, e.g. W 58% left · ~2d",
@@ -346,7 +349,7 @@ function formatFooterUsagePart(label, window, theme) {
   if (!window) return undefined
 
   let text
-  if (label === 'W' && footerConfig.displayMode.startsWith('pace')) {
+  if (label === "W" && footerConfig.displayMode.startsWith("pace")) {
     if (footerConfig.displayMode === "pace") {
       text = `WP ${formatPacePercent(window)}`
     } else if (footerConfig.displayMode === "paceCompact") {
@@ -361,7 +364,8 @@ function formatFooterUsagePart(label, window, theme) {
       text = `${label} ${formatRemainingPercent(window)} left · ${formatResetShort(window.resetAt)}`
     } else {
       const used = formatUsedPercent(window)
-      text = footerConfig.displayMode === "compact"
+      text =
+        footerConfig.displayMode === "compact"
           ? `${label} ${used} · ${formatResetShort(window.resetAt)}`
           : `${label} ${used}`
     }
@@ -586,9 +590,7 @@ function buildUsageDetails(snapshot, provider) {
   lines.push(
     `weekly: ${formatUsedPercent(snapshot?.weekly)} used, ${formatRemainingPercent(snapshot?.weekly)} left, resets ${formatResetLong(snapshot?.weekly?.resetAt)}`,
   )
-  lines.push(
-    `pace: ${formatPacePercent(snapshot?.weekly)}`,
-  )
+  lines.push(`pace: ${formatPacePercent(snapshot?.weekly)}`)
   if (snapshot?.fetchedAt)
     lines.push(`fetched: ${new Date(snapshot.fetchedAt).toLocaleString()}`)
   lines.push(`footer: ${describeFooterConfig()}`)
