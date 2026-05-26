@@ -16,6 +16,9 @@
     "codex"
   ],
   "license": "MIT",
+  "peerDependencies": {
+    "@earendil-works/pi-tui": "*"
+  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/patlux/pi-chatgpt-limit.git"
