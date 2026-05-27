@@ -7,8 +7,19 @@ import http from "node:http"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { test } from "node:test"
+import { __test__ } from "../../extensions/chatgpt-weekly-limit.js"
 
 const EXTENSION_PATH = resolve("extensions/chatgpt-weekly-limit.js")
+const HAS_SCRIPT = !spawnSync("script", ["--version"], {
+  stdio: "ignore",
+}).error
+const HAS_EXPECT = !spawnSync("expect", ["-v"], { stdio: "ignore" }).error
+const SCRIPT_SKIP = HAS_SCRIPT
+  ? false
+  : "requires the `script` command for real pi TUI e2e coverage"
+const EXPECT_SKIP = HAS_EXPECT
+  ? false
+  : "requires the `expect` command for interactive real pi TUI e2e coverage"
 
 function encodeBase64Url(value) {
   return Buffer.from(JSON.stringify(value)).toString("base64url")
@@ -151,15 +162,6 @@ async function runRealPiTui({
   settleMs = 0,
   timeoutMs = 8000,
 }) {
-  if (
-    spawnSync("script", ["--version"], { stdio: "ignore" }).error?.code ===
-    "ENOENT"
-  ) {
-    throw new Error(
-      "The `script` command is required for real pi TUI e2e tests.",
-    )
-  }
-
   const tempDir = await mkdtemp(join(tmpdir(), "pi-chatgpt-limit-e2e-"))
   const outputFile = join(tempDir, "typescript.log")
   const agentDir = join(tempDir, "agent")
@@ -225,14 +227,6 @@ async function runRealPiTuiExpect({
   extraEnv = {},
   timeoutMs = 12000,
 }) {
-  if (
-    spawnSync("expect", ["-v"], { stdio: "ignore" }).error?.code === "ENOENT"
-  ) {
-    throw new Error(
-      "The `expect` command is required for interactive e2e tests.",
-    )
-  }
-
   const tempDir = await mkdtemp(join(tmpdir(), "pi-chatgpt-limit-expect-"))
   const outputFile = join(tempDir, "expect.log")
   const expectFile = join(tempDir, "test.exp")
@@ -312,279 +306,353 @@ close
   }
 }
 
-test("real pi TUI renders the ChatGPT weekly percentage in the footer", async () => {
+test("parses usage snapshots and token metadata without a TUI", () => {
   const token = fakeJwt({
     "https://api.openai.com/auth": {
-      chatgpt_account_id: "acct_test",
+      chatgpt_account_id: "acct_unit",
       chatgpt_plan_type: "pro",
     },
-    "https://api.openai.com/profile": {
-      email: "user@example.com",
+    "https://api.openai.com/profile": { email: "unit@example.com" },
+  })
+
+  assert.deepEqual(__test__.getTokenMetadata(token), {
+    accountId: "acct_unit",
+    planType: "pro",
+    email: "unit@example.com",
+  })
+
+  const snapshot = __test__.parseUsageSnapshot({
+    plan_type: "pro",
+    rate_limit: {
+      primary_window: {
+        used_percent: 25.4,
+        limit_window_seconds: 5 * 60 * 60,
+        reset_at: 123,
+      },
+      secondary_window: {
+        used_percent: 42.2,
+        limit_window_seconds: 7 * 24 * 60 * 60,
+        reset_at: 456,
+      },
     },
   })
 
-  const server = await startUsageServer((req, res) => {
-    assert.equal(req.url, "/backend-api/wham/usage")
-    assert.equal(req.headers.authorization, `Bearer ${token}`)
-    assert.equal(req.headers["chatgpt-account-id"], "acct_test")
-
-    sendUsageResponse(res, {
-      planType: "pro",
-      fiveHourUsed: 25.4,
-      weeklyUsed: 42.2,
-      fiveHourResetSeconds: 3600,
-      weeklyResetSeconds: 86400,
-    })
-  })
-
-  try {
-    const { output } = await runRealPiTui({
-      baseUrl: server.baseUrl,
-      apiKey: token,
-    })
-
-    assert.ok(
-      server.requests.length > 0,
-      "expected real pi extension to call the mocked ChatGPT usage API",
-    )
-    assert.match(output, /gpt-5\.5/)
-    assert.match(output, /42%/)
-  } finally {
-    await server.close()
-  }
+  assert.equal(snapshot.planType, "pro")
+  assert.equal(snapshot.fiveHour.usedPercent, 25.4)
+  assert.equal(snapshot.weekly.usedPercent, 42.2)
 })
 
-test("real pi TUI loads global footer configuration", async (t) => {
-  const token = fakeJwt({
-    "https://api.openai.com/auth": { chatgpt_account_id: "acct_global" },
-  })
-  const server = await startUsageServer((_req, res) => {
-    sendUsageResponse(res)
-  })
+test("normalizes config and formats percentages without a TUI", () => {
+  assert.deepEqual(
+    __test__.normalizeFooterConfig({
+      quotaWindow: "both",
+      displayMode: "pace",
+    }),
+    { quotaWindow: "both", displayMode: "pace" },
+  )
+  assert.deepEqual(
+    __test__.normalizeFooterConfig({ quotaWindow: "bad", displayMode: "bad" }),
+    { quotaWindow: "weekly", displayMode: "used" },
+  )
+  assert.equal(__test__.formatUsedPercent({ usedPercent: 42.6 }), "43%")
+  assert.equal(__test__.formatRemainingPercent({ usedPercent: 42.2 }), "58%")
+  assert.equal(__test__.isOpenAICodexProvider("openai-codex-2"), true)
+})
 
-  try {
-    await t.test("custom display", async () => {
+test(
+  "real pi TUI renders the ChatGPT weekly percentage in the footer",
+  { skip: SCRIPT_SKIP },
+  async () => {
+    const token = fakeJwt({
+      "https://api.openai.com/auth": {
+        chatgpt_account_id: "acct_test",
+        chatgpt_plan_type: "pro",
+      },
+      "https://api.openai.com/profile": {
+        email: "user@example.com",
+      },
+    })
+
+    const server = await startUsageServer((req, res) => {
+      assert.equal(req.url, "/backend-api/wham/usage")
+      assert.equal(req.headers.authorization, `Bearer ${token}`)
+      assert.equal(req.headers["chatgpt-account-id"], "acct_test")
+
+      sendUsageResponse(res, {
+        planType: "pro",
+        fiveHourUsed: 25.4,
+        weeklyUsed: 42.2,
+        fiveHourResetSeconds: 3600,
+        weeklyResetSeconds: 86400,
+      })
+    })
+
+    try {
       const { output } = await runRealPiTui({
         baseUrl: server.baseUrl,
         apiKey: token,
-        initialConfig: { quotaWindow: "both", displayMode: "remaining" },
-        waitFor: (text) => stripAnsi(text).includes("5h 75% left / W 58% left"),
       })
 
-      assert.match(stripAnsi(output), /5h 75% left \/ W 58% left/)
+      assert.ok(
+        server.requests.length > 0,
+        "expected real pi extension to call the mocked ChatGPT usage API",
+      )
+      assert.match(output, /gpt-5\.5/)
+      assert.match(output, /42%/)
+    } finally {
+      await server.close()
+    }
+  },
+)
+
+test(
+  "real pi TUI loads global footer configuration",
+  { skip: SCRIPT_SKIP },
+  async (t) => {
+    const token = fakeJwt({
+      "https://api.openai.com/auth": { chatgpt_account_id: "acct_global" },
+    })
+    const server = await startUsageServer((_req, res) => {
+      sendUsageResponse(res)
     })
 
-    await t.test("hidden display", async () => {
-      const requestCount = server.requests.length
-      const { output } = await runRealPiTui({
+    try {
+      await t.test("custom display", async () => {
+        const { output } = await runRealPiTui({
+          baseUrl: server.baseUrl,
+          apiKey: token,
+          initialConfig: { quotaWindow: "both", displayMode: "remaining" },
+          waitFor: (text) =>
+            stripAnsi(text).includes("5h 75% left / W 58% left"),
+        })
+
+        assert.match(stripAnsi(output), /5h 75% left \/ W 58% left/)
+      })
+
+      await t.test("hidden display", async () => {
+        const requestCount = server.requests.length
+        const { output } = await runRealPiTui({
+          baseUrl: server.baseUrl,
+          apiKey: token,
+          initialConfig: { quotaWindow: "hidden", displayMode: "used" },
+          waitFor: (text) =>
+            server.requests.length > requestCount &&
+            stripAnsi(text).includes("gpt-5.5"),
+          settleMs: 500,
+        })
+
+        assert.doesNotMatch(stripAnsi(output), /W 42%|5h 25%/)
+      })
+    } finally {
+      await server.close()
+    }
+  },
+)
+
+test(
+  "real pi TUI cancels footer previews and resets defaults",
+  { skip: EXPECT_SKIP },
+  async () => {
+    const down = "\\033\\[B"
+    const enter = "\\r"
+    const escape = "\\033"
+    const displayModeMenu = `${down}${down}${enter}`
+    const resetMenu = `${down}${down}${down}${enter}`
+    const defaultConfig = { quotaWindow: "weekly", displayMode: "used" }
+    const token = fakeJwt({
+      "https://api.openai.com/auth": { chatgpt_account_id: "acct_reset" },
+    })
+    const server = await startUsageServer((_req, res) => {
+      sendUsageResponse(res)
+    })
+
+    try {
+      const previewOutput = await runRealPiTuiExpect({
         baseUrl: server.baseUrl,
         apiKey: token,
-        initialConfig: { quotaWindow: "hidden", displayMode: "used" },
-        waitFor: (text) =>
-          server.requests.length > requestCount &&
-          stripAnsi(text).includes("gpt-5.5"),
-        settleMs: 500,
-      })
-
-      assert.doesNotMatch(stripAnsi(output), /W 42%|5h 25%/)
-    })
-  } finally {
-    await server.close()
-  }
-})
-
-test("real pi TUI cancels footer previews and resets defaults", async () => {
-  const down = "\\033\\[B"
-  const enter = "\\r"
-  const escape = "\\033"
-  const displayModeMenu = `${down}${down}${enter}`
-  const resetMenu = `${down}${down}${down}${enter}`
-  const defaultConfig = { quotaWindow: "weekly", displayMode: "used" }
-  const token = fakeJwt({
-    "https://api.openai.com/auth": { chatgpt_account_id: "acct_reset" },
-  })
-  const server = await startUsageServer((_req, res) => {
-    sendUsageResponse(res)
-  })
-
-  try {
-    const previewOutput = await runRealPiTuiExpect({
-      baseUrl: server.baseUrl,
-      apiKey: token,
-      initialConfig: defaultConfig,
-      expectedConfig: defaultConfig,
-      scriptBody: `${expectBlock("Configure footer display mode")}
+        initialConfig: defaultConfig,
+        expectedConfig: defaultConfig,
+        scriptBody: `${expectBlock("Configure footer display mode")}
 send "${expectSendLiteral(displayModeMenu)}"
 ${expectBlock("How should the footer value be shown?")}
 send "${expectSendLiteral(down)}"
 ${expectBlock("W 42% · ~2d")}
 send "${expectSendLiteral(escape)}"
 ${expectBlock("gpt-5.5")}`,
-    })
-    const previewText = stripAnsi(previewOutput)
-    const previewIndex = previewText.lastIndexOf("W 42% · ~2d")
-    assert.ok(previewIndex >= 0, previewText)
-    assert.ok(previewText.lastIndexOf("W 42%") > previewIndex, previewText)
+      })
+      const previewText = stripAnsi(previewOutput)
+      const previewIndex = previewText.lastIndexOf("W 42% · ~2d")
+      assert.ok(previewIndex >= 0, previewText)
+      assert.ok(previewText.lastIndexOf("W 42%") > previewIndex, previewText)
 
-    const resetOutput = await runRealPiTuiExpect({
-      baseUrl: server.baseUrl,
-      apiKey: token,
-      initialConfig: { quotaWindow: "both", displayMode: "remainingCompact" },
-      expectedConfig: defaultConfig,
-      scriptBody: `${expectBlock("Reset footer settings to defaults")}
+      const resetOutput = await runRealPiTuiExpect({
+        baseUrl: server.baseUrl,
+        apiKey: token,
+        initialConfig: { quotaWindow: "both", displayMode: "remainingCompact" },
+        expectedConfig: defaultConfig,
+        scriptBody: `${expectBlock("Reset footer settings to defaults")}
 send "${expectSendLiteral(resetMenu)}"
 ${expectBlock("Reset ChatGPT footer settings?")}
 send "${expectSendLiteral(enter)}"
 ${expectBlock("ChatGPT footer settings reset to defaults.")}`,
-    })
-    assert.match(stripAnsi(resetOutput), /settings reset to defaults/)
-  } finally {
-    await server.close()
-  }
-})
-
-test("real pi TUI previews and saves footer display configuration options", async (t) => {
-  const down = "\\033\\[B"
-  const enter = "\\r"
-  const displayModeMenu = `${down}${down}${enter}`
-  const footerLimitMenu = `${down}${enter}`
-  const cases = [
-    {
-      name: "5-hour limit",
-      mainKeys: footerLimitMenu,
-      optionKeys: `${down}${enter}`,
-      submenuText: "Display which ChatGPT limit in footer?",
-      expectText: "ChatGPT footer display: 5-hour usage",
-      expectedConfig: { quotaWindow: "fiveHour", displayMode: "used" },
-    },
-    {
-      name: "both 5-hour and weekly limits",
-      mainKeys: footerLimitMenu,
-      optionKeys: `${down}${down}${enter}`,
-      submenuText: "Display which ChatGPT limit in footer?",
-      expectText: "ChatGPT footer display: Both 5-hour and weekly",
-      expectedConfig: { quotaWindow: "both", displayMode: "used" },
-    },
-    {
-      name: "hidden footer limit",
-      mainKeys: footerLimitMenu,
-      optionKeys: `${down}${down}${down}${enter}`,
-      submenuText: "Display which ChatGPT limit in footer?",
-      expectText:
-        "ChatGPT footer display: Hide usage from footer (usage hidden).",
-      expectedConfig: { quotaWindow: "hidden", displayMode: "used" },
-    },
-    {
-      name: "used percent with reset",
-      mainKeys: displayModeMenu,
-      optionKeys: `${down}${enter}`,
-      submenuText: "How should the footer value be shown?",
-      expectText:
-        "ChatGPT footer mode: Used percent with reset, e.g. W 42% · ~2d",
-      expectedConfig: { quotaWindow: "weekly", displayMode: "compact" },
-    },
-    {
-      name: "pace percent with state",
-      mainKeys: displayModeMenu,
-      optionKeys: `${down}${down}${enter}`,
-      submenuText: "How should the footer value be shown?",
-      expectText:
-        "ChatGPT footer mode: Pace percent with state, e.g. WP 13% (reserve)",
-      expectedConfig: { quotaWindow: "weekly", displayMode: "pace" },
-    },
-    {
-      name: "pace percent",
-      mainKeys: displayModeMenu,
-      optionKeys: `${down}${down}${down}${enter}`,
-      submenuText: "How should the footer value be shown?",
-      expectText: "ChatGPT footer mode: Pace percent, e.g. WP -13%",
-      expectedConfig: { quotaWindow: "weekly", displayMode: "paceCompact" },
-    },
-    {
-      name: "pace percent with reset",
-      mainKeys: displayModeMenu,
-      optionKeys: `${down}${down}${down}${down}${enter}`,
-      submenuText: "How should the footer value be shown?",
-      expectText:
-        "ChatGPT footer mode: Pace percent with reset, e.g. WP -13% · ~2d",
-      expectedConfig: {
-        quotaWindow: "weekly",
-        displayMode: "paceResetCompact",
-      },
-    },
-    {
-      name: "remaining percent",
-      mainKeys: displayModeMenu,
-      optionKeys: `${down}${down}${down}${down}${down}${enter}`,
-      submenuText: "How should the footer value be shown?",
-      expectText: "ChatGPT footer mode: Remaining percent, e.g. W 58% left",
-      expectedConfig: { quotaWindow: "weekly", displayMode: "remaining" },
-    },
-    {
-      name: "remaining percent with reset",
-      mainKeys: displayModeMenu,
-      optionKeys: `${down}${down}${down}${down}${down}${down}${enter}`,
-      submenuText: "How should the footer value be shown?",
-      expectText:
-        "ChatGPT footer mode: Remaining percent with reset, e.g. W 58% left · ~2d",
-      expectedConfig: {
-        quotaWindow: "weekly",
-        displayMode: "remainingCompact",
-      },
-    },
-  ]
-
-  for (const testCase of cases) {
-    await t.test(testCase.name, async () => {
-      const token = fakeJwt({
-        "https://api.openai.com/auth": { chatgpt_account_id: "acct_config" },
       })
-      const server = await startUsageServer((_req, res) => {
-        sendUsageResponse(res)
-      })
+      assert.match(stripAnsi(resetOutput), /settings reset to defaults/)
+    } finally {
+      await server.close()
+    }
+  },
+)
 
-      try {
-        await runRealPiTuiExpect({
-          baseUrl: server.baseUrl,
-          apiKey: token,
-          mainKeys: testCase.mainKeys,
-          optionKeys: testCase.optionKeys,
-          submenuText: testCase.submenuText,
-          expectText: testCase.expectText,
-          expectedConfig: testCase.expectedConfig,
+test(
+  "real pi TUI previews and saves footer display configuration options",
+  { skip: EXPECT_SKIP },
+  async (t) => {
+    const down = "\\033\\[B"
+    const enter = "\\r"
+    const displayModeMenu = `${down}${down}${enter}`
+    const footerLimitMenu = `${down}${enter}`
+    const cases = [
+      {
+        name: "5-hour limit",
+        mainKeys: footerLimitMenu,
+        optionKeys: `${down}${enter}`,
+        submenuText: "Display which ChatGPT limit in footer?",
+        expectText: "ChatGPT footer display: 5-hour usage",
+        expectedConfig: { quotaWindow: "fiveHour", displayMode: "used" },
+      },
+      {
+        name: "both 5-hour and weekly limits",
+        mainKeys: footerLimitMenu,
+        optionKeys: `${down}${down}${enter}`,
+        submenuText: "Display which ChatGPT limit in footer?",
+        expectText: "ChatGPT footer display: Both 5-hour and weekly",
+        expectedConfig: { quotaWindow: "both", displayMode: "used" },
+      },
+      {
+        name: "hidden footer limit",
+        mainKeys: footerLimitMenu,
+        optionKeys: `${down}${down}${down}${enter}`,
+        submenuText: "Display which ChatGPT limit in footer?",
+        expectText:
+          "ChatGPT footer display: Hide usage from footer (usage hidden).",
+        expectedConfig: { quotaWindow: "hidden", displayMode: "used" },
+      },
+      {
+        name: "used percent with reset",
+        mainKeys: displayModeMenu,
+        optionKeys: `${down}${enter}`,
+        submenuText: "How should the footer value be shown?",
+        expectText:
+          "ChatGPT footer mode: Used percent with reset, e.g. W 42% · ~2d",
+        expectedConfig: { quotaWindow: "weekly", displayMode: "compact" },
+      },
+      {
+        name: "pace percent with state",
+        mainKeys: displayModeMenu,
+        optionKeys: `${down}${down}${enter}`,
+        submenuText: "How should the footer value be shown?",
+        expectText:
+          "ChatGPT footer mode: Pace percent with state, e.g. WP 13% (reserve)",
+        expectedConfig: { quotaWindow: "weekly", displayMode: "pace" },
+      },
+      {
+        name: "pace percent",
+        mainKeys: displayModeMenu,
+        optionKeys: `${down}${down}${down}${enter}`,
+        submenuText: "How should the footer value be shown?",
+        expectText: "ChatGPT footer mode: Pace percent, e.g. WP -13%",
+        expectedConfig: { quotaWindow: "weekly", displayMode: "paceCompact" },
+      },
+      {
+        name: "pace percent with reset",
+        mainKeys: displayModeMenu,
+        optionKeys: `${down}${down}${down}${down}${enter}`,
+        submenuText: "How should the footer value be shown?",
+        expectText:
+          "ChatGPT footer mode: Pace percent with reset, e.g. WP -13% · ~2d",
+        expectedConfig: {
+          quotaWindow: "weekly",
+          displayMode: "paceResetCompact",
+        },
+      },
+      {
+        name: "remaining percent",
+        mainKeys: displayModeMenu,
+        optionKeys: `${down}${down}${down}${down}${down}${enter}`,
+        submenuText: "How should the footer value be shown?",
+        expectText: "ChatGPT footer mode: Remaining percent, e.g. W 58% left",
+        expectedConfig: { quotaWindow: "weekly", displayMode: "remaining" },
+      },
+      {
+        name: "remaining percent with reset",
+        mainKeys: displayModeMenu,
+        optionKeys: `${down}${down}${down}${down}${down}${down}${enter}`,
+        submenuText: "How should the footer value be shown?",
+        expectText:
+          "ChatGPT footer mode: Remaining percent with reset, e.g. W 58% left · ~2d",
+        expectedConfig: {
+          quotaWindow: "weekly",
+          displayMode: "remainingCompact",
+        },
+      },
+    ]
+
+    for (const testCase of cases) {
+      await t.test(testCase.name, async () => {
+        const token = fakeJwt({
+          "https://api.openai.com/auth": { chatgpt_account_id: "acct_config" },
         })
-      } finally {
-        await server.close()
-      }
+        const server = await startUsageServer((_req, res) => {
+          sendUsageResponse(res)
+        })
+
+        try {
+          await runRealPiTuiExpect({
+            baseUrl: server.baseUrl,
+            apiKey: token,
+            mainKeys: testCase.mainKeys,
+            optionKeys: testCase.optionKeys,
+            submenuText: testCase.submenuText,
+            expectText: testCase.expectText,
+            expectedConfig: testCase.expectedConfig,
+          })
+        } finally {
+          await server.close()
+        }
+      })
+    }
+  },
+)
+
+test(
+  "real pi TUI still fetches usage when PI_OFFLINE is set",
+  { skip: SCRIPT_SKIP },
+  async () => {
+    const token = fakeJwt({
+      "https://api.openai.com/auth": { chatgpt_account_id: "acct_offline" },
     })
-  }
-})
 
-test("real pi TUI still fetches usage when PI_OFFLINE is set", async () => {
-  const token = fakeJwt({
-    "https://api.openai.com/auth": { chatgpt_account_id: "acct_offline" },
-  })
-
-  const server = await startUsageServer((_req, res) => {
-    sendUsageResponse(res, {
-      fiveHourUsed: 1,
-      fiveHourResetSeconds: 3600,
-      weeklyResetSeconds: 86400,
-    })
-  })
-
-  try {
-    const { output } = await runRealPiTui({
-      baseUrl: server.baseUrl,
-      apiKey: token,
-      extraEnv: { PI_OFFLINE: "1" },
+    const server = await startUsageServer((_req, res) => {
+      sendUsageResponse(res, {
+        fiveHourUsed: 1,
+        fiveHourResetSeconds: 3600,
+        weeklyResetSeconds: 86400,
+      })
     })
 
-    assert.ok(
-      server.requests.length > 0,
-      `expected usage fetch even when PI_OFFLINE=1; output was:\n${output}`,
-    )
-  } finally {
-    await server.close()
-  }
-})
+    try {
+      const { output } = await runRealPiTui({
+        baseUrl: server.baseUrl,
+        apiKey: token,
+        extraEnv: { PI_OFFLINE: "1" },
+      })
+
+      assert.ok(
+        server.requests.length > 0,
+        `expected usage fetch even when PI_OFFLINE=1; output was:\n${output}`,
+      )
+    } finally {
+      await server.close()
+    }
+  },
+)

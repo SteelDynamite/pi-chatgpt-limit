@@ -728,6 +728,19 @@ async function resetFooterConfig(ctx) {
   ctx.ui.notify("ChatGPT footer settings reset to defaults.", "info")
 }
 
+export const __test__ = {
+  calculatePacePercentValue,
+  formatPacePercent,
+  formatPacePercentShort,
+  formatRemainingPercent,
+  formatResetShort,
+  formatUsedPercent,
+  getTokenMetadata,
+  isOpenAICodexProvider,
+  normalizeFooterConfig,
+  parseUsageSnapshot,
+}
+
 export default function (pi) {
   /** @type {Promise<unknown>} */
   let inFlight = Promise.resolve()

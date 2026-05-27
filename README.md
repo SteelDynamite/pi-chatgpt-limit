@@ -76,6 +76,8 @@ GET https://chatgpt.com/backend-api/wham/usage
 
 It uses the OAuth token already stored by pi for the active `openai-codex` provider.
 
+`CHATGPT_BASE_URL` can override the endpoint for testing or proxies. Because the request includes the bearer token, only set `CHATGPT_BASE_URL` to infrastructure you trust.
+
 Extensions run with local user permissions and can access pi auth storage. Review extensions before installing them.
 
 ## Publish
