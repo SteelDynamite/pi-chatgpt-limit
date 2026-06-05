@@ -52,6 +52,8 @@ declare module "@earendil-works/pi-coding-agent" {
   }
 
   export interface ExtensionContext {
+    mode?: string
+    hasUI?: boolean
     model?: Model
     getContextUsage():
       | {

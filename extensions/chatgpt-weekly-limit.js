@@ -323,6 +323,38 @@ function describeFooterConfig() {
   return `${quotaWindow?.label || "Weekly usage"}; ${displayMode?.label || "Used percent"}`
 }
 
+function inferProcessMode(
+  argv = process.argv.slice(2),
+  stdinIsTTY = process.stdin.isTTY,
+  stdoutIsTTY = process.stdout.isTTY,
+) {
+  for (let index = 0; index < argv.length; index++) {
+    const arg = argv[index]
+    if (arg === "--mode") {
+      const mode = argv[index + 1]
+      if (typeof mode === "string") return mode
+    } else if (arg.startsWith("--mode=")) {
+      return arg.slice("--mode=".length)
+    }
+  }
+
+  if (argv.includes("--print") || argv.includes("-p")) return "print"
+  return stdinIsTTY && stdoutIsTTY !== false ? "tui" : "print"
+}
+
+function isTuiContext(ctx, argv, stdinIsTTY, stdoutIsTTY) {
+  const mode =
+    typeof ctx.mode === "string"
+      ? ctx.mode
+      : inferProcessMode(argv, stdinIsTTY, stdoutIsTTY)
+
+  return (
+    (mode === "tui" || mode === "interactive") &&
+    ctx.hasUI !== false &&
+    typeof ctx.ui?.setFooter === "function"
+  )
+}
+
 async function saveFooterConfig(nextConfig) {
   footerConfig = normalizeFooterConfig(nextConfig)
   requestRender()
@@ -738,6 +770,8 @@ export const __test__ = {
   getTokenMetadata,
   isOpenAICodexProvider,
   normalizeFooterConfig,
+  inferProcessMode,
+  isTuiContext,
   parseUsageSnapshot,
 }
 
@@ -754,14 +788,21 @@ export default function (pi) {
     void queueUpdate(ctx).catch(() => undefined)
   }
 
+  function queueAutomaticUpdateInBackground(ctx) {
+    if (!isTuiContext(ctx)) return
+    queueUpdateInBackground(ctx)
+  }
+
   pi.on("session_start", async (_event, ctx) => {
     await restoreFooterConfig(ctx)
+    if (!isTuiContext(ctx)) return
+
     installFooter(pi, ctx)
     queueUpdateInBackground(ctx)
   })
 
-  pi.on("model_select", (_event, ctx) => queueUpdateInBackground(ctx))
-  pi.on("agent_end", (_event, ctx) => queueUpdateInBackground(ctx))
+  pi.on("model_select", (_event, ctx) => queueAutomaticUpdateInBackground(ctx))
+  pi.on("agent_end", (_event, ctx) => queueAutomaticUpdateInBackground(ctx))
 
   pi.on("session_shutdown", async () => {
     if (refreshTimer) clearInterval(refreshTimer)

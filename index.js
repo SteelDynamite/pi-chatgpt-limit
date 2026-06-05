@@ -1,1 +1,1 @@
-export { default } from "./extensions/chatgpt-weekly-limit.js";
+export { default } from "./extensions/chatgpt-weekly-limit.js"

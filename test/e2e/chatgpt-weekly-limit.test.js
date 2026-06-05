@@ -2,12 +2,19 @@ import assert from "node:assert/strict"
 import { spawn, spawnSync } from "node:child_process"
 import { once } from "node:events"
 import { existsSync } from "node:fs"
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  writeFile,
+} from "node:fs/promises"
 import http from "node:http"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { test } from "node:test"
-import { __test__ } from "../../extensions/chatgpt-weekly-limit.js"
+import extension, { __test__ } from "../../extensions/chatgpt-weekly-limit.js"
 
 const EXTENSION_PATH = resolve("extensions/chatgpt-weekly-limit.js")
 const HAS_SCRIPT = !spawnSync("script", ["--version"], {
@@ -98,12 +105,36 @@ async function readIfExists(path) {
   return readFile(path, "utf8")
 }
 
-async function waitForOutput(path, predicate, timeoutMs = 8000) {
+function stripEscapedAnsi(value) {
+  return String(value)
+    .replace(/\\u001b\][^\n]*?\\u0007/g, "")
+    .replace(/\\u001b\[[0-?]*[ -/]*[@-~]/g, "")
+}
+
+async function readTuiDebugOutput() {
+  try {
+    const files = await readdir("/tmp/tui")
+    const contents = await Promise.all(
+      files.map((file) => readIfExists(join("/tmp/tui", file))),
+    )
+    const output = contents.join("\n")
+    return `${output}\n${stripEscapedAnsi(output)}`
+  } catch {
+    return ""
+  }
+}
+
+async function waitForOutput(
+  path,
+  predicate,
+  timeoutMs = 8000,
+  readExtraOutput = async () => "",
+) {
   const startedAt = Date.now()
   let output = ""
 
   while (Date.now() - startedAt < timeoutMs) {
-    output = await readIfExists(path)
+    output = `${await readIfExists(path)}\n${await readExtraOutput()}`
     if (predicate(output)) return output
     await new Promise((resolveWait) => setTimeout(resolveWait, 100))
   }
@@ -176,6 +207,7 @@ async function runRealPiTui({
   }
 
   const piArgs = buildPiArgs(apiKey)
+  await rm("/tmp/tui", { recursive: true, force: true })
 
   const [command, args] = scriptCommand(outputFile, "pi", piArgs)
   const child = spawn(command, args, {
@@ -190,15 +222,21 @@ async function runRealPiTui({
       NO_COLOR: "0",
       COLUMNS: "160",
       LINES: "40",
+      PI_TUI_DEBUG: "1",
       ...extraEnv,
     },
   })
 
   try {
-    let output = await waitForOutput(outputFile, waitFor, timeoutMs)
+    let output = await waitForOutput(
+      outputFile,
+      waitFor,
+      timeoutMs,
+      readTuiDebugOutput,
+    )
     if (settleMs > 0) {
       await new Promise((resolveWait) => setTimeout(resolveWait, settleMs))
-      output = await readIfExists(outputFile)
+      output = `${await readIfExists(outputFile)}\n${await readTuiDebugOutput()}`
     }
     return { output, outputFile }
   } finally {
@@ -210,6 +248,7 @@ async function runRealPiTui({
       process.kill(-child.pid, "SIGKILL")
     } catch {}
     await rm(tempDir, { recursive: true, force: true })
+    await rm("/tmp/tui", { recursive: true, force: true })
   }
 }
 
@@ -306,6 +345,124 @@ close
   }
 }
 
+test("skips automatic footer and usage work outside TUI mode", async () => {
+  const originalAgentDir = process.env.PI_CODING_AGENT_DIR
+  const tempDir = await mkdtemp(join(tmpdir(), "pi-chatgpt-limit-mode-"))
+  process.env.PI_CODING_AGENT_DIR = tempDir
+
+  try {
+    for (const mode of ["rpc", "json", "print"]) {
+      const handlers = new Map()
+      let footerInstalls = 0
+      let usageAuthCalls = 0
+
+      extension({
+        on(eventName, handler) {
+          handlers.set(eventName, handler)
+        },
+        registerCommand() {},
+      })
+
+      const ctx = {
+        mode,
+        model: { provider: "openai-codex", id: "gpt-5.5" },
+        modelRegistry: {
+          getApiKeyAndHeaders: async () => {
+            usageAuthCalls++
+            return { ok: false }
+          },
+        },
+        sessionManager: {
+          getBranch: () => [],
+        },
+        ui: {
+          setFooter: () => {
+            footerInstalls++
+          },
+        },
+      }
+
+      await handlers.get("session_start")?.({}, ctx)
+      handlers.get("model_select")?.({}, ctx)
+      handlers.get("agent_end")?.({}, ctx)
+      await new Promise((resolveWait) => setTimeout(resolveWait, 20))
+
+      assert.equal(footerInstalls, 0, `${mode} should not install footer`)
+      assert.equal(usageAuthCalls, 0, `${mode} should not fetch usage`)
+    }
+  } finally {
+    if (originalAgentDir === undefined) {
+      delete process.env.PI_CODING_AGENT_DIR
+    } else {
+      process.env.PI_CODING_AGENT_DIR = originalAgentDir
+    }
+    await rm(tempDir, { recursive: true, force: true })
+  }
+})
+
+test("installs footer when ctx.mode is unavailable but process looks interactive", async () => {
+  const originalAgentDir = process.env.PI_CODING_AGENT_DIR
+  const originalIsTTY = process.stdin.isTTY
+  const tempDir = await mkdtemp(join(tmpdir(), "pi-chatgpt-limit-fallback-"))
+  process.env.PI_CODING_AGENT_DIR = tempDir
+  Object.defineProperty(process.stdin, "isTTY", {
+    value: true,
+    configurable: true,
+  })
+
+  try {
+    const handlers = new Map()
+    let footerInstalls = 0
+    let usageAuthCalls = 0
+
+    extension({
+      on(eventName, handler) {
+        handlers.set(eventName, handler)
+      },
+      registerCommand() {},
+    })
+
+    const ctx = {
+      model: { provider: "openai-codex", id: "gpt-5.5" },
+      modelRegistry: {
+        getApiKeyAndHeaders: async () => {
+          usageAuthCalls++
+          return { ok: false }
+        },
+      },
+      sessionManager: {
+        getBranch: () => [],
+      },
+      ui: {
+        setFooter: () => {
+          footerInstalls++
+        },
+      },
+    }
+
+    await handlers.get("session_start")?.({}, ctx)
+    await new Promise((resolveWait) => setTimeout(resolveWait, 20))
+
+    assert.equal(footerInstalls, 1)
+    assert.equal(usageAuthCalls, 1)
+  } finally {
+    if (originalIsTTY === undefined) {
+      delete process.stdin.isTTY
+    } else {
+      Object.defineProperty(process.stdin, "isTTY", {
+        value: originalIsTTY,
+        configurable: true,
+      })
+    }
+    if (originalAgentDir === undefined) {
+      delete process.env.PI_CODING_AGENT_DIR
+    } else {
+      process.env.PI_CODING_AGENT_DIR = originalAgentDir
+    }
+    await rm(tempDir, { recursive: true, force: true })
+  }
+})
+
 test("parses usage snapshots and token metadata without a TUI", () => {
   const token = fakeJwt({
     "https://api.openai.com/auth": {
@@ -357,6 +514,34 @@ test("normalizes config and formats percentages without a TUI", () => {
   assert.equal(__test__.formatUsedPercent({ usedPercent: 42.6 }), "43%")
   assert.equal(__test__.formatRemainingPercent({ usedPercent: 42.2 }), "58%")
   assert.equal(__test__.isOpenAICodexProvider("openai-codex-2"), true)
+})
+
+test("detects TUI mode with context and process fallback", () => {
+  const tuiCtx = { ui: { setFooter() {} } }
+
+  assert.equal(
+    __test__.isTuiContext({ ...tuiCtx, mode: "tui" }, ["-p"], false),
+    true,
+  )
+  assert.equal(
+    __test__.isTuiContext({ ...tuiCtx, mode: "interactive" }, ["-p"], false),
+    true,
+  )
+  assert.equal(
+    __test__.isTuiContext({ ...tuiCtx, mode: "rpc" }, [], true),
+    false,
+  )
+  assert.equal(__test__.isTuiContext(tuiCtx, [], true), true)
+  assert.equal(__test__.isTuiContext(tuiCtx, ["--mode", "rpc"], true), false)
+  assert.equal(__test__.isTuiContext(tuiCtx, ["--mode=json"], true), false)
+  assert.equal(__test__.isTuiContext(tuiCtx, ["--mode=paseo"], true), false)
+  assert.equal(__test__.isTuiContext(tuiCtx, ["--print"], true), false)
+  assert.equal(__test__.isTuiContext(tuiCtx, [], false), false)
+  assert.equal(__test__.isTuiContext(tuiCtx, [], true, false), false)
+  assert.equal(
+    __test__.isTuiContext({ ...tuiCtx, hasUI: false }, [], true),
+    false,
+  )
 })
 
 test(
