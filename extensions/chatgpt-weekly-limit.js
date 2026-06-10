@@ -16,9 +16,14 @@ import {
   visibleWidth,
 } from "@earendil-works/pi-tui"
 
-const CHATGPT_BASE_URL = (
-  process.env.CHATGPT_BASE_URL || "https://chatgpt.com/backend-api"
-).replace(/\/+$/, "")
+const DEFAULT_CHATGPT_BASE_URL = "https://chatgpt.com/backend-api"
+const TRUST_CUSTOM_BASE_URL_ENV = "CHATGPT_LIMIT_TRUST_CUSTOM_BASE_URL"
+const ALLOWED_CHATGPT_ORIGINS = new Set(["https://chatgpt.com"])
+const CHATGPT_BASE_URL_RESULT = resolveChatGptBaseUrl(
+  process.env.CHATGPT_BASE_URL,
+  parseBooleanEnv(process.env[TRUST_CUSTOM_BASE_URL_ENV]),
+)
+const CHATGPT_BASE_URL = CHATGPT_BASE_URL_RESULT.url
 const OPENAI_AUTH_CLAIM = "https://api.openai.com/auth"
 const OPENAI_PROFILE_CLAIM = "https://api.openai.com/profile"
 const FIVE_HOUR_SECONDS = 5 * 60 * 60
@@ -30,6 +35,7 @@ const DEFAULT_FOOTER_CONFIG = {
   quotaWindow: "weekly",
   displayMode: "used",
 }
+const CUSTOM_CONFIG_CANCELLED = Symbol("custom config cancelled")
 
 const QUOTA_WINDOW_OPTIONS = [
   { label: "Weekly usage (default)", value: "weekly" },
@@ -58,6 +64,57 @@ let usageSnapshot
 let footerConfig = { ...DEFAULT_FOOTER_CONFIG }
 let refreshTimer
 let requestRender = () => {}
+
+/** @param {string | undefined} value */
+function parseBooleanEnv(value) {
+  return /^(1|true|yes)$/i.test(value || "")
+}
+
+/**
+ * @param {string | undefined} value
+ * @param {boolean} trustCustomBaseUrl
+ */
+function resolveChatGptBaseUrl(value, trustCustomBaseUrl = false) {
+  const rawValue = value || DEFAULT_CHATGPT_BASE_URL
+  let url
+
+  try {
+    url = new URL(rawValue)
+  } catch {
+    return {
+      ok: false,
+      url: undefined,
+      reason: "CHATGPT_BASE_URL must be an absolute URL.",
+    }
+  }
+
+  if (trustCustomBaseUrl) {
+    if (url.protocol !== "https:" && url.protocol !== "http:") {
+      return {
+        ok: false,
+        url: undefined,
+        reason: "Trusted custom CHATGPT_BASE_URL must use http: or https:.",
+      }
+    }
+  } else {
+    if (url.protocol !== "https:") {
+      return {
+        ok: false,
+        url: undefined,
+        reason: "CHATGPT_BASE_URL must use https:.",
+      }
+    }
+    if (!ALLOWED_CHATGPT_ORIGINS.has(url.origin)) {
+      return {
+        ok: false,
+        url: undefined,
+        reason: `${url.origin} is not an allowed ChatGPT origin. Set ${TRUST_CUSTOM_BASE_URL_ENV}=1 only for trusted proxies/testing.`,
+      }
+    }
+  }
+
+  return { ok: true, url: url.href.replace(/\/+$/, ""), reason: undefined }
+}
 
 /** @param {string | undefined} provider */
 function isOpenAICodexProvider(provider) {
@@ -569,6 +626,12 @@ async function updateUsage(ctx) {
     return undefined
   }
 
+  if (!CHATGPT_BASE_URL) {
+    usageSnapshot = undefined
+    requestRender()
+    return undefined
+  }
+
   const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model)
   if (!auth.ok || !auth.apiKey) {
     usageSnapshot = undefined
@@ -626,8 +689,30 @@ function buildUsageDetails(snapshot, provider) {
   if (snapshot?.fetchedAt)
     lines.push(`fetched: ${new Date(snapshot.fetchedAt).toLocaleString()}`)
   lines.push(`footer: ${describeFooterConfig()}`)
-  lines.push(`endpoint: ${CHATGPT_BASE_URL}/wham/usage`)
+  lines.push(
+    `endpoint: ${
+      CHATGPT_BASE_URL
+        ? `${CHATGPT_BASE_URL}/wham/usage`
+        : `disabled (${CHATGPT_BASE_URL_RESULT.reason})`
+    }`,
+  )
   return lines
+}
+
+async function selectFooterConfigOptionFallback(
+  ctx,
+  title,
+  options,
+  currentValue,
+) {
+  const labels = options.map((option) =>
+    option.value === currentValue ? `${option.label} (current)` : option.label,
+  )
+  const selectedLabel = await ctx.ui.select(title, labels)
+  if (!selectedLabel) return undefined
+
+  const selectedIndex = labels.indexOf(selectedLabel)
+  return selectedIndex >= 0 ? options[selectedIndex] : undefined
 }
 
 async function selectFooterConfigOption(
@@ -643,73 +728,87 @@ async function selectFooterConfigOption(
   )
   const originalConfig = { ...footerConfig }
 
-  const selected = await ctx.ui.custom((tui, theme, _keybindings, done) => {
-    let selectedIndex = initialIndex
+  const selected =
+    typeof ctx.ui.custom === "function"
+      ? await ctx.ui.custom((tui, theme, _keybindings, done) => {
+          let selectedIndex = initialIndex
 
-    function applyPreview() {
-      preview(options[selectedIndex].value)
-      requestRender()
-    }
+          function applyPreview() {
+            preview(options[selectedIndex].value)
+            requestRender()
+          }
 
-    applyPreview()
-
-    return {
-      invalidate() {},
-      handleInput(data) {
-        if (matchesKey(data, Key.up)) {
-          selectedIndex = Math.max(0, selectedIndex - 1)
           applyPreview()
-          tui.requestRender()
-          return
-        }
-        if (matchesKey(data, Key.down)) {
-          selectedIndex = Math.min(options.length - 1, selectedIndex + 1)
-          applyPreview()
-          tui.requestRender()
-          return
-        }
-        if (matchesKey(data, Key.enter)) {
-          done(options[selectedIndex])
-          return
-        }
-        if (matchesKey(data, Key.escape) || matchesKey(data, Key.ctrl("c"))) {
-          done(undefined)
-        }
-      },
-      render(width) {
-        const lines = [
-          theme.fg("accent", theme.bold(title)),
-          theme.fg("dim", "↑↓ preview in footer • enter save • esc cancel"),
-          "",
-        ]
 
-        for (let index = 0; index < options.length; index++) {
-          const option = options[index]
-          const isSelected = index === selectedIndex
-          const isCurrent = option.value === currentValue
-          const prefix = isSelected ? "› " : "  "
-          const suffix = isCurrent ? "  current" : ""
-          const text = `${prefix}${option.label}${suffix}`
-          lines.push(
-            truncateToWidth(
-              isSelected ? theme.fg("accent", text) : text,
-              width,
-              "…",
-            ),
-          )
-        }
+          return {
+            invalidate() {},
+            handleInput(data) {
+              if (matchesKey(data, Key.up)) {
+                selectedIndex = Math.max(0, selectedIndex - 1)
+                applyPreview()
+                tui.requestRender()
+                return
+              }
+              if (matchesKey(data, Key.down)) {
+                selectedIndex = Math.min(options.length - 1, selectedIndex + 1)
+                applyPreview()
+                tui.requestRender()
+                return
+              }
+              if (matchesKey(data, Key.enter)) {
+                done(options[selectedIndex])
+                return
+              }
+              if (
+                matchesKey(data, Key.escape) ||
+                matchesKey(data, Key.ctrl("c"))
+              ) {
+                done(CUSTOM_CONFIG_CANCELLED)
+              }
+            },
+            render(width) {
+              const lines = [
+                theme.fg("accent", theme.bold(title)),
+                theme.fg(
+                  "dim",
+                  "↑↓ preview in footer • enter save • esc cancel",
+                ),
+                "",
+              ]
 
-        return lines.map((line) => truncateToWidth(line, width, "…"))
-      },
-    }
-  })
+              for (let index = 0; index < options.length; index++) {
+                const option = options[index]
+                const isSelected = index === selectedIndex
+                const isCurrent = option.value === currentValue
+                const prefix = isSelected ? "› " : "  "
+                const suffix = isCurrent ? "  current" : ""
+                const text = `${prefix}${option.label}${suffix}`
+                lines.push(
+                  truncateToWidth(
+                    isSelected ? theme.fg("accent", text) : text,
+                    width,
+                    "…",
+                  ),
+                )
+              }
 
-  if (!selected) {
+              return lines.map((line) => truncateToWidth(line, width, "…"))
+            },
+          }
+        })
+      : undefined
+
+  if (selected === CUSTOM_CONFIG_CANCELLED) {
     footerConfig = originalConfig
     requestRender()
+    return undefined
   }
 
-  return selected
+  if (selected) return selected
+
+  footerConfig = originalConfig
+  requestRender()
+  return selectFooterConfigOptionFallback(ctx, title, options, currentValue)
 }
 
 async function configureQuotaWindow(ctx) {
@@ -773,6 +872,7 @@ export const __test__ = {
   inferProcessMode,
   isTuiContext,
   parseUsageSnapshot,
+  resolveChatGptBaseUrl,
 }
 
 export default function (pi) {

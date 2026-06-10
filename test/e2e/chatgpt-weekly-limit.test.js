@@ -216,6 +216,7 @@ async function runRealPiTui({
     env: {
       ...process.env,
       CHATGPT_BASE_URL: baseUrl,
+      CHATGPT_LIMIT_TRUST_CUSTOM_BASE_URL: "1",
       PI_CODING_AGENT_DIR: agentDir,
       PI_CODING_AGENT_SESSION_DIR: sessionDir,
       TERM: "xterm-256color",
@@ -282,6 +283,7 @@ async function runRealPiTuiExpect({
   const piArgs = buildPiArgs(apiKey).map(tclDoubleQuote).join(" ")
   const env = {
     CHATGPT_BASE_URL: baseUrl,
+    CHATGPT_LIMIT_TRUST_CUSTOM_BASE_URL: "1",
     PI_CODING_AGENT_DIR: agentDir,
     PI_CODING_AGENT_SESSION_DIR: sessionDir,
     TERM: "xterm-256color",
@@ -499,6 +501,31 @@ test("parses usage snapshots and token metadata without a TUI", () => {
   assert.equal(snapshot.weekly.usedPercent, 42.2)
 })
 
+test("validates ChatGPT base URL before bearer token use", () => {
+  assert.deepEqual(__test__.resolveChatGptBaseUrl(undefined), {
+    ok: true,
+    url: "https://chatgpt.com/backend-api",
+    reason: undefined,
+  })
+  assert.equal(
+    __test__.resolveChatGptBaseUrl("https://chatgpt.com/backend-api/").url,
+    "https://chatgpt.com/backend-api",
+  )
+  assert.equal(
+    __test__.resolveChatGptBaseUrl("http://chatgpt.com/backend-api").ok,
+    false,
+  )
+  assert.equal(
+    __test__.resolveChatGptBaseUrl("https://example.com/backend-api").ok,
+    false,
+  )
+  assert.equal(
+    __test__.resolveChatGptBaseUrl("http://127.0.0.1:123/backend-api", true)
+      .url,
+    "http://127.0.0.1:123/backend-api",
+  )
+})
+
 test("normalizes config and formats percentages without a TUI", () => {
   assert.deepEqual(
     __test__.normalizeFooterConfig({
@@ -542,6 +569,81 @@ test("detects TUI mode with context and process fallback", () => {
     __test__.isTuiContext({ ...tuiCtx, hasUI: false }, [], true),
     false,
   )
+})
+
+test("RPC fallback configures footer when custom UI is unavailable", async () => {
+  const originalAgentDir = process.env.PI_CODING_AGENT_DIR
+  const tempDir = await mkdtemp(join(tmpdir(), "pi-chatgpt-limit-rpc-"))
+  process.env.PI_CODING_AGENT_DIR = tempDir
+
+  try {
+    const handlers = new Map()
+    let command
+    let customCalls = 0
+    const notifications = []
+    const selectResponses = []
+
+    extension({
+      on(eventName, handler) {
+        handlers.set(eventName, handler)
+      },
+      registerCommand(name, registeredCommand) {
+        if (name === "chatgpt-limit") command = registeredCommand
+      },
+    })
+
+    const ctx = {
+      mode: "rpc",
+      sessionManager: { getBranch: () => [] },
+      ui: {
+        custom: async () => {
+          customCalls++
+          return undefined
+        },
+        select: async (_title, options) => {
+          const response = selectResponses.shift()
+          return typeof response === "function" ? response(options) : response
+        },
+        notify: (message) => notifications.push(message),
+        confirm: async () => false,
+      },
+    }
+
+    await handlers.get("session_start")?.({}, ctx)
+
+    selectResponses.push(
+      (options) =>
+        options.find((option) => option.startsWith("Configure footer limit")),
+      "Both 5-hour and weekly",
+    )
+    await command.handler([], ctx)
+    assert.deepEqual(
+      JSON.parse(await readFile(join(tempDir, "chatgpt-limit.json"), "utf8")),
+      { quotaWindow: "both", displayMode: "used" },
+    )
+
+    selectResponses.push(
+      "Configure footer display mode",
+      "Remaining percent, e.g. W 58% left",
+    )
+    await command.handler([], ctx)
+    assert.deepEqual(
+      JSON.parse(await readFile(join(tempDir, "chatgpt-limit.json"), "utf8")),
+      { quotaWindow: "both", displayMode: "remaining" },
+    )
+    assert.equal(customCalls, 2)
+    assert.deepEqual(notifications, [
+      "ChatGPT footer display: Both 5-hour and weekly",
+      "ChatGPT footer mode: Remaining percent, e.g. W 58% left",
+    ])
+  } finally {
+    if (originalAgentDir === undefined) {
+      delete process.env.PI_CODING_AGENT_DIR
+    } else {
+      process.env.PI_CODING_AGENT_DIR = originalAgentDir
+    }
+    await rm(tempDir, { recursive: true, force: true })
+  }
 })
 
 test(

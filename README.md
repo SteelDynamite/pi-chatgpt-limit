@@ -50,10 +50,10 @@ This shows:
 
 ### Footer configuration
 
-The `/chatgpt-limit` menu also configures the footer display:
+The `/chatgpt-limit` menu also configures the footer display in terminal pi and RPC/Paseo clients:
 
 - show weekly usage (default), 5-hour usage, both, or hide usage
-- show used percent, used percent with reset, remaining percent, or remaining percent with reset
+- show used percent, used percent with reset, pace percent, remaining percent, or reset-time variants
 - reset footer settings to defaults
 
 Examples:
@@ -76,7 +76,9 @@ GET https://chatgpt.com/backend-api/wham/usage
 
 It uses the OAuth token already stored by pi for the active `openai-codex` provider.
 
-`CHATGPT_BASE_URL` can override the endpoint for testing or proxies. Because the request includes the bearer token, only set `CHATGPT_BASE_URL` to infrastructure you trust.
+By default, usage requests are sent only to HTTPS URLs on the `https://chatgpt.com` origin.
+
+`CHATGPT_BASE_URL` can override the endpoint path on `https://chatgpt.com`, for example for endpoint testing. To use a non-ChatGPT testing or proxy URL, set `CHATGPT_LIMIT_TRUST_CUSTOM_BASE_URL=1` as an explicit opt-in. Because the request includes the bearer token, only use that opt-in with infrastructure you trust.
 
 Extensions run with local user permissions and can access pi auth storage. Review extensions before installing them.
 
