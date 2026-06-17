@@ -418,7 +418,7 @@ async function saveFooterConfig(nextConfig) {
   await writeGlobalFooterConfig(footerConfig)
 }
 
-/** @param {import('@earendil-works/pi-ai').AssistantMessage['usage']} usage */
+/** @param {PiAssistantUsage | undefined} usage */
 function addUsage(total, usage) {
   total.input += usage?.input ?? 0
   total.output += usage?.output ?? 0
@@ -600,7 +600,7 @@ function renderFooter(pi, ctx, footerData, theme, width) {
   return [pwdLine, theme.fg("dim", statsLeft) + theme.fg("dim", remainder)]
 }
 
-/** @param {import('@earendil-works/pi-coding-agent').ExtensionContext} ctx */
+/** @param {PiExtensionContext} ctx */
 function installFooter(pi, ctx) {
   ctx.ui.setFooter((tui, theme, footerData) => {
     requestRender = () => tui.requestRender()
@@ -617,7 +617,7 @@ function installFooter(pi, ctx) {
   })
 }
 
-/** @param {import('@earendil-works/pi-coding-agent').ExtensionContext} ctx */
+/** @param {PiExtensionContext} ctx */
 async function updateUsage(ctx) {
   const model = ctx.model
   if (!isOpenAICodexProvider(model?.provider)) {
